@@ -1,0 +1,52 @@
+---
+title: "Location_Mapping"
+output: pdf_document
+date: "2024-03-06"
+---
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(sf)
+library(tmap) 
+library(spData)
+library(readxl)
+library(tigris) 
+library(ggrepel)
+```
+
+
+```{r}
+data("us_states") # from spData package
+or <- us_states %>% filter(NAME == "Oregon")
+counties <- counties(state = "OR", class = "sf")
+```
+
+```{r}
+vine_location <- read_excel("Vine_Location.xlsx")
+vinestate <- read_excel("vine_state.xlsx")
+centroid <- read_excel("Centroid.xlsx")
+```
+
+mapping the state with points for each vineyard
+```{r}
+map <- ggplot(or) +
+  geom_sf(data = counties, fill = "beige") + geom_point(data = vine_location, aes(x = lon, y = lat, color = Region)) + theme(axis.text.x = element_blank(), axis.text.y = element_blank(), axis.title = element_blank())
+map
+ggsave("map.pdf")
+```
+
+mapping a zoomed in image of the regions of interest
+```{r}
+gg <- merge(vine_location,aggregate(cbind(mean.x=lon,mean.y=lat)~Region,vine_location,mean),by="Region")
+state <- ggplot(or) +
+  geom_sf(data = counties, fill = "beige")+ 
+  geom_point(data = vine_location, aes(x = lon, y = lat, color = Region)) + 
+  geom_point(data = gg, aes(x=mean.x,y=mean.y, color = Region),size=2) +
+  geom_segment(data = gg, aes(x=mean.x, y=mean.y, xend=lon, yend=lat, color = Region)) +
+  coord_sf(xlim = c(-123.3, -122.9), ylim = c(44.9, 45.4), expand = FALSE) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust=.5)) + 
+  geom_text_repel(data = vine_location, aes( x = lon, y = lat, label = Vineyard), size = 2)
+state
+ggsave("state.pdf")
+```

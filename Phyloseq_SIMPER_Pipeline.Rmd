@@ -1,0 +1,189 @@
+---
+title: "Phyloseq_SIMPER_Pipeline"
+output: pdf_document
+date: "2024-03-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Load in Libraries:**
+```{r libraries, message=FALSE}
+library(stringi)
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(ape)
+library(S4Vectors)
+library(vegan)
+library(agricolae)
+library(tibble)
+library(readxl)
+library(mdthemes)
+```
+
+**Read in Data:**
+```{r}
+  otu_mat<- read_excel("OTU_S1.xlsx")
+  tax_mat<- read_excel("taxonomy_1.xlsx")
+  samples_df <- read_excel("Hanseniaspora_Samples.xlsx")
+  sim <- read_excel("simper.xlsx")
+```
+
+* define the row names from the otu column
+
+```{r}
+  otu_mat <- otu_mat %>%
+    tibble::column_to_rownames("index") 
+```
+
+
+* Idem for the two other matrixes 
+```{r}
+  tax_mat <- tax_mat %>% 
+    tibble::column_to_rownames("index")
+
+  samples_df <- samples_df %>% 
+    tibble::column_to_rownames("sample_ID") 
+  sim <- sim %>%
+    tibble::column_to_rownames("ID")
+```
+
+Transform into matrixes otu and tax tables (sample table can be left as data frame)
+
+```{r}
+  otu_mat <- as.matrix(otu_mat)
+  tax_mat <- as.matrix(tax_mat)
+```
+
+Transform to phyloseq objects
+
+```{r}
+  OTU = otu_table(otu_mat, taxa_are_rows = TRUE)
+  TAX = tax_table(tax_mat)
+  samples = sample_data(samples_df)
+  
+  carbomA <- phyloseq(OTU, TAX, samples)
+  carbomA
+``` 
+Visualize data
+```{r}
+  sample_names(carbomA)
+  rank_names(carbomA)
+  sample_variables(carbomA)
+```
+
+Normalize number of reads in each sample using median sequencing depth.
+```{r}
+  total = median(sample_sums(carbomA))
+  standf = function(x, t=total) round(t * (x / sum(x)))
+  carbomA = transform_sample_counts(carbomA, standf)
+```
+
+
+**Alpha Diversity**
+```{r}
+richnessA <- estimate_richness(carbomA)
+head(richnessA)
+```
+
+```{r}
+  plot_richness(carbomA, measures=c("Chao1", "Shannon"), x= "Vineyard", color = "Region", shape = "Region")
+```
+
+alpha anova:
+```{r}
+aova.sh <- aov(richnessA$Shannon ~ sample_data(carbomA)$Type)
+summary(aova.sh)
+```
+```{r}
+aova.ch <- aov(richnessA$Chao1 ~ sample_data(carbomA)$Type)
+summary(aova.ch)
+```
+
+alpha tukey:
+```{r}
+tukA <- HSD.test(aova.sh, "sample_data(carbomA)$Type", group = TRUE)
+print(tukA)
+```
+```{r}
+tukAc <- HSD.test(aova.ch, "sample_data(carbomA)$Type", group = TRUE)
+print(tukAc)
+```
+
+**Beta Diversity**
+Do multivariate analysis based on Bray-Curtis distance and NMDS ordination.
+```{r}
+  carbom.ordA <- ordinate(carbomA, "NMDS", "bray")
+```
+
+```{r}
+ps.dist <- phyloseq::distance(carbomA, method="bray")
+ps_norm_df <- as(sample_data(carbomA), "data.frame")
+```
+
+beta PERMANOVA
+blocked:
+```{r}
+block<- how(within = Within(type = "free"),
+              plots = Plots(strata = ps_norm_df$Vineyard, type = "none"),
+              blocks = NULL, 
+              nperm = 10000,
+              observed = TRUE)
+set.seed(55)
+adonis2(ps.dist ~ ps_norm_df$Region + ps_norm_df$Type, permutations = block)
+```
+
+unblocked:
+```{r}
+set.seed(55)
+adonis2(ps.dist ~ ps_norm_df$Region + ps_norm_df$Type, permutations = 10000)
+```
+
+
+**SIMPER**
+
+basic simper analysis:
+```{r}
+simperA_vine <- simper(sim, ps_norm_df$Type) 
+```
+
+Vineyard comparison simper script:
+
+```{r}
+simperE_f <- simper(simE, ps_norm_df$Vineyard) 
+```
+```{r}
+E_f <- data.frame(do.call(rbind, simperE_f))
+vineyard <- c("B_C", "B_D", "B_E", "B_H", "B_L", "C_D", "C_E", "C_H", "C_L", "D_E", "D_H", "D_L", "E_H", "E_L", "H_L")
+dataLen <- length(unlist(E_f$species[1]))
+vin_adj <- 1
+for(i in 1:length(vineyard)) {
+  vin_adj <- c(vin_adj, rep(vineyard[i],dataLen))
+}
+vin_adj <- vin_adj[-1]
+datafill <- data.frame("Species" = (rep(NA, length(vineyard)*dataLen)), "vineyard" = vin_adj, "Average" = (rep(NA, length(vineyard)*dataLen)), "p" = (rep(NA, length(vineyard)*dataLen)))
+E_f <- E_f[,c("species","average","p")]
+for(x in 1:length(E_f$species)) {
+  for(z in 1:dataLen) {
+    datafill[(z+(x-1)*dataLen), 1] = as.character(unlist(E_f[x,1]))[z]
+    datafill[(z+(x-1)*dataLen), 3] = as.character(unlist(E_f[x,2]))[z]
+    datafill[(z+(x-1)*dataLen), 4] = as.character(unlist(E_f[x,3]))[z]
+  }
+}
+```
+```{r}
+Eola_sig <- datafill[which(datafill$p <= 0.05),]
+sepSpecies <- data.frame("Kingdom" = sapply(Eola_sig$Species, function(x) strsplit(x, ";")[[1]], USE.NAMES=FALSE)[1,], "Phyllum" = sapply(Eola_sig$Species, function(x) strsplit(x, ";")[[1]], USE.NAMES=FALSE)[2,], "Class" = sapply(Eola_sig$Species, function(x) strsplit(x, ";")[[1]], USE.NAMES=FALSE)[3,], "Order" = sapply(Eola_sig$Species, function(x) strsplit(x, ";")[[1]], USE.NAMES=FALSE)[4,], "Family" = sapply(Eola_sig$Species, function(x) strsplit(x, ";")[[1]], USE.NAMES=FALSE)[5,], "Genus" = sapply(Eola_sig$Species, function(x) strsplit(x, ";")[[1]], USE.NAMES=FALSE)[6,], "Species" = sapply(Eola_sig$Species, function(x) strsplit(x, ";")[[1]], USE.NAMES=FALSE)[7,], Eola_sig[,c(2:4)])
+sepSpecies$Average <- as.numeric(sepSpecies$Average)
+sepSpecies$p <- as.numeric(sepSpecies$p)
+cumsum <- sepSpecies %>%
+  group_by(Kingdom, Phyllum, Class, Order, Family, Genus, Species) %>%
+  summarise(cummulativeAve = sum(Average))
+```
+```{r}
+write.csv(cumsum, "Eola_Simperf.csv")
+```
+
+
